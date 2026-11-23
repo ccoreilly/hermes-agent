@@ -2001,20 +2001,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
-        self, room_id: str, body: str, relates_to: dict
+        self, room_id: str, body: str, relates_to: dict, *, sender: str, is_dm: bool,
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-        """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
-        the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
-        prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
-        reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
-        reply_to_text = reply_to_author_id = reply_to_author_name = None
-        if reply_to and body.startswith("> "):
-            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            body = _strip_reply_fallback(body)
-            # Resolve the replied-to author's display name (falls back to localpart).
-            if reply_to_author_id:
-                reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
-        return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
+        """Preserve the inline quote, or recover a missing quote in a trusted private room."""
+        from plugins.platforms.matrix.adapter_reply import extract_reply_context
+
+        return await extract_reply_context(self, room_id, body, relates_to, sender=sender, is_dm=is_dm)
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
@@ -2027,9 +2019,9 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        body, is_dm, _chat_type, _thread_id, display_name, source = ctx
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
-            await self._extract_reply_context(room_id, body, relates_to))
+            await self._extract_reply_context(room_id, body, relates_to, sender=sender, is_dm=is_dm))
         media_msgtype = extra.pop("media_msgtype", None)
         if media_msgtype is None:
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
